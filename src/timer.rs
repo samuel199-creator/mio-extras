@@ -1,6 +1,6 @@
 //! Timer optimized for I/O related operations
 use crate::convert;
-use lazycell::LazyCell;
+use once_cell::unsync::OnceCell;
 use mio::{Evented, Poll, PollOpt, Ready, Registration, SetReadiness, Token};
 use slab::Slab;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -37,7 +37,7 @@ pub struct Timer<T> {
     // Masks the target tick to get the slot
     mask: u64,
     // Set on registration with Poll
-    inner: LazyCell<Inner>,
+    inner: OnceCell<Inner>,
 }
 
 /// Used to create a `Timer`.
@@ -167,7 +167,7 @@ impl<T> Timer<T> {
             tick: 0,
             next: EMPTY,
             mask,
-            inner: LazyCell::new(),
+            inner: OnceCell::new(),
         }
     }
 
@@ -309,7 +309,7 @@ impl<T> Timer<T> {
         }
 
         // No more timeouts to poll
-        if let Some(inner) = self.inner.borrow() {
+        if let Some(inner) = self.inner.get() {
             trace!("unsetting readiness");
             let _ = inner.set_readiness.set_readiness(Ready::empty());
 
@@ -347,7 +347,7 @@ impl<T> Timer<T> {
     }
 
     fn schedule_readiness(&self, tick: Tick) {
-        if let Some(inner) = self.inner.borrow() {
+        if let Some(inner) = self.inner.get() {
             // Coordinate setting readiness w/ the wakeup thread
             let mut curr = inner.wakeup_state.load(Ordering::Acquire);
 
@@ -410,7 +410,7 @@ impl<T> Evented for Timer<T> {
         interest: Ready,
         opts: PollOpt,
     ) -> io::Result<()> {
-        if self.inner.borrow().is_some() {
+        if self.inner.get().is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "timer already registered",
@@ -428,7 +428,7 @@ impl<T> Evented for Timer<T> {
         );
 
         self.inner
-            .fill(Inner {
+            .set(Inner {
                 registration,
                 set_readiness,
                 wakeup_state,
@@ -450,7 +450,7 @@ impl<T> Evented for Timer<T> {
         interest: Ready,
         opts: PollOpt,
     ) -> io::Result<()> {
-        match self.inner.borrow() {
+        match self.inner.get() {
             Some(inner) => poll.reregister(&inner.registration, token, interest, opts),
             None => Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -460,7 +460,7 @@ impl<T> Evented for Timer<T> {
     }
 
     fn deregister(&self, poll: &Poll) -> io::Result<()> {
-        match self.inner.borrow() {
+        match self.inner.get() {
             Some(inner) => poll.deregister(&inner.registration),
             None => Err(io::Error::new(
                 io::ErrorKind::Other,

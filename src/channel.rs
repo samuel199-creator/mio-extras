@@ -1,5 +1,5 @@
 //! Thread safe communication channel implementing `Evented`
-use lazycell::{AtomicLazyCell, LazyCell};
+use once_cell::{sync, unsync};
 use mio::{Evented, Poll, PollOpt, Ready, Registration, SetReadiness, Token};
 use std::any::Any;
 use std::error;
@@ -37,7 +37,7 @@ fn ctl_pair() -> (SenderCtl, ReceiverCtl) {
     let inner = Arc::new(Inner {
         pending: AtomicUsize::new(0),
         senders: AtomicUsize::new(1),
-        set_readiness: AtomicLazyCell::new(),
+        set_readiness: sync::OnceCell::new(),
     });
 
     let tx = SenderCtl {
@@ -45,7 +45,7 @@ fn ctl_pair() -> (SenderCtl, ReceiverCtl) {
     };
 
     let rx = ReceiverCtl {
-        registration: LazyCell::new(),
+        registration: unsync::OnceCell::new(),
         inner,
     };
 
@@ -59,7 +59,7 @@ struct SenderCtl {
 
 /// Tracks messages received on a channel in order to track readiness.
 struct ReceiverCtl {
-    registration: LazyCell<Registration>,
+    registration: unsync::OnceCell<Registration>,
     inner: Arc<Inner>,
 }
 
@@ -108,7 +108,7 @@ struct Inner {
     // The number of sender handles
     senders: AtomicUsize,
     // The set readiness handle
-    set_readiness: AtomicLazyCell<SetReadiness>,
+    set_readiness: sync::OnceCell<SetReadiness>,
 }
 
 impl<T> Sender<T> {
@@ -212,7 +212,7 @@ impl SenderCtl {
 
         if 0 == cnt {
             // Toggle readiness to readable
-            if let Some(set_readiness) = self.inner.set_readiness.borrow() {
+            if let Some(set_readiness) = self.inner.set_readiness.get() {
                 set_readiness.set_readiness(Ready::readable())?;
             }
         }
@@ -244,7 +244,7 @@ impl ReceiverCtl {
 
         if first == 1 {
             // Unset readiness
-            if let Some(set_readiness) = self.inner.set_readiness.borrow() {
+            if let Some(set_readiness) = self.inner.set_readiness.get() {
                 set_readiness.set_readiness(Ready::empty())?;
             }
         }
@@ -255,7 +255,7 @@ impl ReceiverCtl {
         if first == 1 && second > 1 {
             // There are still pending messages. Since readiness was
             // previously unset, it must be reset here
-            if let Some(set_readiness) = self.inner.set_readiness.borrow() {
+            if let Some(set_readiness) = self.inner.set_readiness.get() {
                 set_readiness.set_readiness(Ready::readable())?;
             }
         }
@@ -272,7 +272,7 @@ impl Evented for ReceiverCtl {
         interest: Ready,
         opts: PollOpt,
     ) -> io::Result<()> {
-        if self.registration.borrow().is_some() {
+        if self.registration.get().is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "receiver already registered",
@@ -288,11 +288,11 @@ impl Evented for ReceiverCtl {
         }
 
         self.registration
-            .fill(registration)
+            .set(registration)
             .expect("unexpected state encountered");
         self.inner
             .set_readiness
-            .fill(set_readiness)
+            .set(set_readiness)
             .expect("unexpected state encountered");
 
         Ok(())
@@ -305,7 +305,7 @@ impl Evented for ReceiverCtl {
         interest: Ready,
         opts: PollOpt,
     ) -> io::Result<()> {
-        match self.registration.borrow() {
+        match self.registration.get() {
             Some(registration) => poll.reregister(registration, token, interest, opts),
             None => Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -315,7 +315,7 @@ impl Evented for ReceiverCtl {
     }
 
     fn deregister(&self, poll: &Poll) -> io::Result<()> {
-        match self.registration.borrow() {
+        match self.registration.get() {
             Some(registration) => poll.deregister(registration),
             None => Err(io::Error::new(
                 io::ErrorKind::Other,

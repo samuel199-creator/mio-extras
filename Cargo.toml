@@ -13,10 +13,17 @@ exclude       = [".gitignore"]
 edition       = "2018"
 
 [dependencies]
-mio = "0.6.14"
-log = "0.4"
-lazycell = "1"
-slab = "0.4"
+sgx_tstd    = { rev = "v1.1.3", git = "https://github.com/apache/teaclave-sgx-sdk.git", optional = true }
+mio         = { git = "https://github.com/mesalock-linux/mio-sgx", branch = "v0.6_sgx_1.1.3" }
+log         = { git = "https://github.com/mesalock-linux/log-sgx" }
+once_cell   = { git = "https://github.com/mesalock-linux/once_cell-sgx" }
+slab        = { git = "https://github.com/mesalock-linux/slab-sgx" }
+
+[features]
+default = ["std", "mesalock_sgx"]
+# Enables `once_cell::sync` module.
+std = ["mesalock_sgx"]
+mesalock_sgx = ["std", "sgx_tstd"]
 
 [[test]]
 name = "test"
